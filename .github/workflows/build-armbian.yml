@@ -1,6 +1,6 @@
 #==========================================================================
 # Description: Build Armbian
-# Copyright (C) 2021 https://github.com/ophub/amlogic-s9xxx-armbian
+# Copyright (C) 2021 https://github.com/zhz8888/amlogic-s9xxx-armbian
 #==========================================================================
 
 name: Build armbian
@@ -230,7 +230,7 @@ on:
         options:
           - ophub
           - angel
-          - yourname
+          - zhz8888
 
 env:
   TZ: America/New_York
@@ -293,7 +293,7 @@ jobs:
           df -hT ${PWD}
           git clone -q --single-branch --depth=1 --branch=main https://github.com/armbian/build.git build
           ln -sf /builder/build ${GITHUB_WORKSPACE}/build
-          ln -sf /builder/build /home/runner/work/_actions/ophub/amlogic-s9xxx-armbian/main/build
+          ln -sf /builder/build /home/runner/work/_actions/zhz8888/amlogic-s9xxx-armbian/main/build
           echo "status=success" >> ${GITHUB_OUTPUT}
 
       - name: Compile Armbian [ ${{ inputs.set_release }} ]
@@ -331,7 +331,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rebuild Armbian
-        uses: ophub/amlogic-s9xxx-armbian@main
+        uses: zhz8888/amlogic-s9xxx-armbian@main
         if: ${{ steps.clean.outputs.status }} == 'success' && !cancelled()
         with:
           build_target: armbian

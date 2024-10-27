@@ -1,6 +1,6 @@
 #==========================================================================
 # Description: Build Armbian
-# Copyright (C) 2021 https://github.com/ophub/amlogic-s9xxx-armbian
+# Copyright (C) 2021 https://github.com/zhz8888/amlogic-s9xxx-armbian
 #==========================================================================
 
 name: Rebuild armbian
@@ -224,7 +224,7 @@ on:
         options:
           - ophub
           - angel
-          - yourname
+          - zhz8888
 
 env:
   TZ: America/New_York
@@ -311,14 +311,14 @@ jobs:
 
           mkdir -p /builder/build
           ln -sf /builder/build ${GITHUB_WORKSPACE}/build
-          ln -sf /builder/build /home/runner/work/_actions/ophub/amlogic-s9xxx-armbian/main/build
+          ln -sf /builder/build /home/runner/work/_actions/zhz8888/amlogic-s9xxx-armbian/main/build
 
           sudo timedatectl set-timezone "${TZ}"
           echo "build_tag=Armbian${set_release}_${{ inputs.armbian_storage }}_$(date +"%Y.%m")" >> ${GITHUB_OUTPUT}
           echo "status=success" >> ${GITHUB_OUTPUT}
 
       - name: Rebuild Armbian
-        uses: ophub/amlogic-s9xxx-armbian@main
+        uses: zhz8888/amlogic-s9xxx-armbian@main
         if: ${{ env.ARMBIAN_URL }} != '' && !cancelled()
         with:
           build_target: armbian
