@@ -72,7 +72,7 @@ git_service_type="github"
 git_domain="github.com"
 git_protocol="https"
 build_kernel=("6.1.y" "6.12.y")
-all_kernel=("5.4.y" "5.10.y" "5.15.y" "6.1.y" "6.6.y" "6.12.y")
+all_kernel=("5.4.y" "5.10.y" "5.15.y" "6.1.y" "6.6.y" "6.12.y" "6.16.y")
 # Set whether to use the latest kernel, options: [ true / false ]
 auto_kernel="true"
 # Set whether to apply custom kernel patches, options: [ true / false ]
@@ -731,10 +731,41 @@ query_version() {
         latest_version="$(curl -s "${kernel_makefile_url}" | grep -oE "SUBLEVEL =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
         if [[ "${?}" -eq "0" && -n "${latest_version}" ]]; then
             tmp_arr_kernels[${i}]="${MAIN_LINE}.${latest_version}"
+            echo -e "${INFO} (${i}) [ ${tmp_arr_kernels[$i]} ] is ${git_service_type}/${code_owner}/${linux_repo} latest kernel."
         else
-            error_msg "Failed to query the kernel version in [ ${git_service_type}/${code_owner}/${linux_repo} ]"
+            # Try alternative method: check if repository exists using git ls-remote
+            repo_url=""
+            case "${git_service_type}" in
+                "github")
+                    repo_url="https://${git_domain}/${code_owner}/${linux_repo}.git"
+                    ;;
+                "gitlab")
+                    repo_url="https://${git_domain}/${code_owner}/${linux_repo}.git"
+                    ;;
+                "bitbucket")
+                    repo_url="https://${git_domain}/${code_owner}/${linux_repo}.git"
+                    ;;
+                "gitee")
+                    repo_url="https://${git_domain}/${code_owner}/${linux_repo}.git"
+                    ;;
+                "custom")
+                    repo_url="https://${git_domain}/${code_owner}/${linux_repo}.git"
+                    ;;
+            esac
+            
+            # Check if repository exists
+            if git ls-remote --exit-code "${repo_url}" &>/dev/null; then
+                # Repository exists but Makefile might be inaccessible or in different location
+                echo -e "${WARNING} Repository exists but cannot query version from Makefile, keeping original version [ ${KERNEL_VAR} ]"
+                tmp_arr_kernels[${i}]="${KERNEL_VAR}"
+            else
+                # Repository doesn't exist, likely an unsupported kernel version
+                echo -e "${WARNING} Kernel version [ ${KERNEL_VAR} ] is not supported, removing from build list"
+                # Don't add this kernel to the array, effectively skipping it
+                let i--
+            fi
         fi
-        echo -e "${INFO} (${i}) [ ${tmp_arr_kernels[$i]} ] is ${git_service_type}/${code_owner}/${linux_repo} latest kernel. \n"
+        echo ""
 
         let i++
     done
