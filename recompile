@@ -66,6 +66,11 @@ host_version_id="$(cat /etc/os-release 2>/dev/null | grep '^VERSION_ID=.*' | cut
 # Set the default for downloading kernel sources from github.com
 repo_owner="unifreq"
 repo_branch="main"
+# Git service provider configuration
+# Supported service types: github, gitlab, bitbucket, gitee, gogs, gitea, custom domain
+git_service_type="github"
+git_domain="github.com"
+git_protocol="https"
 build_kernel=("6.1.y" "6.12.y")
 all_kernel=("5.4.y" "5.10.y" "5.15.y" "6.1.y" "6.6.y" "6.12.y")
 # Set whether to use the latest kernel, options: [ true / false ]
@@ -115,6 +120,272 @@ ERROR="[\033[91m ERROR \033[0m]"
 error_msg() {
     echo -e "${ERROR} ${1}"
     exit 1
+}
+
+# Parse Git repository URL, supporting multiple Git hosting services
+parse_git_url() {
+    local input_url="${1}"
+    local git_service=""
+    local domain=""
+    local owner=""
+    local repo=""
+    local branch_or_commit=""
+    
+    # If input is empty, use default values
+    if [[ -z "${input_url}" ]]; then
+        git_service="github"
+        domain="github.com"
+        owner="${repo_owner}"
+        repo=""
+        branch_or_commit="${repo_branch}"
+        echo "${git_service}|${domain}|${owner}|${repo}|${branch_or_commit}"
+        return 0
+    fi
+    
+    # Remove possible protocol prefixes
+    input_url="${input_url#https://}"
+    input_url="${input_url#http://}"
+    input_url="${input_url#git@}"
+    
+    # Remove possible .git suffix
+    input_url="${input_url%.git}"
+    
+    # Parse branch or commit hash
+    # 1. First check if there is a branch/commit hash separated by @ symbol
+    if [[ "${input_url}" == *"@"* ]]; then
+        branch_or_commit="${input_url#*@}"
+        input_url="${input_url%@*}"
+    # 2. Then check GitHub style URLs (/tree/ or /commit/)
+    elif [[ "${input_url}" == *"/tree/"* ]]; then
+        branch_or_commit="${input_url#*/tree/}"
+        input_url="${input_url%/tree/*}"
+    elif [[ "${input_url}" == *"/commit/"* ]]; then
+        branch_or_commit="${input_url#*/commit/}"
+        input_url="${input_url%/commit/*}"
+    # 3. Then check GitLab style URLs (/-/tree/ or /-/commit/)
+    elif [[ "${input_url}" == *"/-/tree/"* ]]; then
+        branch_or_commit="${input_url#*/-/tree/}"
+        input_url="${input_url%/-/tree/*}"
+    elif [[ "${input_url}" == *"/-/commit/"* ]]; then
+        branch_or_commit="${input_url#*/-/commit/}"
+        input_url="${input_url%/-/commit/*}"
+    # 4. Then check Bitbucket style URLs (/src/)
+    elif [[ "${input_url}" == *"/src/"* ]]; then
+        branch_or_commit="${input_url#*/src/}"
+        input_url="${input_url%/src/*}"
+    else
+        branch_or_commit="${repo_branch}"
+    fi
+    
+    # Parse Git service type and domain
+    if [[ "${input_url}" == *"github.com"* ]]; then
+        git_service="github"
+        domain="github.com"
+    elif [[ "${input_url}" == *"gitlab.com"* ]]; then
+        git_service="gitlab"
+        domain="gitlab.com"
+    elif [[ "${input_url}" == *"bitbucket.org"* ]]; then
+        git_service="bitbucket"
+        domain="bitbucket.org"
+    elif [[ "${input_url}" == *"gitee.com"* ]]; then
+        git_service="gitee"
+        domain="gitee.com"
+    else
+        # Custom domain, assume the first part is the domain
+        domain="${input_url%%/*}"
+        git_service="custom"
+    fi
+    
+    # Parse owner and repository name
+    local path="${input_url#*/}"
+    owner="${path%%/*}"
+    repo="${path#*/}"
+    
+    # Handle GitLab style URLs, remove /-/ part
+    if [[ "${repo}" == *"/-"* ]]; then
+        repo="${repo%%/-*}"
+    fi
+    
+    # If no repository name is specified, use default kernel repository naming pattern
+    if [[ -z "${repo}" || "${repo}" == "${path}" ]]; then
+        repo=""
+    fi
+    
+    # Validate required fields
+    if [[ -z "${owner}" ]]; then
+        error_msg "Invalid Git repository URL: Unable to parse repository owner"
+    fi
+    
+    echo "${git_service}|${domain}|${owner}|${repo}|${branch_or_commit}"
+}
+
+# Validate if Git repository URL is accessible
+validate_git_repository() {
+    local git_service="${1}"
+    local domain="${2}"
+    local owner="${3}"
+    local repo="${4}"
+    local branch_or_commit="${5}"
+    
+    # Build repository URL
+    local repo_url=""
+    case "${git_service}" in
+        "github"|"gitlab"|"bitbucket"|"gitee")
+            repo_url="${git_protocol}://${domain}/${owner}/${repo}"
+            ;;
+        "custom")
+            repo_url="${git_protocol}://${domain}/${owner}/${repo}"
+            ;;
+        *)
+            error_msg "Unsupported Git service type: ${git_service}"
+            ;;
+    esac
+    
+    # Verify if repository exists
+    echo -e "${INFO} Verifying Git repository accessibility: ${repo_url}"
+    if ! git ls-remote --exit-code "${repo_url}" &>/dev/null; then
+        git_error_handler "ls-remote" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+    fi
+    
+    # If branch or commit hash is specified, verify if it exists
+    if [[ -n "${branch_or_commit}" ]]; then
+        if ! git ls-remote --exit-code "${repo_url}" "${branch_or_commit}" &>/dev/null; then
+            # Might be a commit hash, try full verification
+            if [[ ${#branch_or_commit} -ne 40 ]]; then
+                git_error_handler "ref-not-found" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+            fi
+        fi
+    fi
+    
+    echo -e "${SUCCESS} Git repository verification successful"
+}
+
+# Generic Git repository clone function
+git_clone_repository() {
+    local git_service="${1}"
+    local domain="${2}"
+    local owner="${3}"
+    local repo="${4}"
+    local branch_or_commit="${5}"
+    local target_dir="${6}"
+    
+    # Build repository URL
+    local repo_url=""
+    case "${git_service}" in
+        "github"|"gitlab"|"bitbucket"|"gitee")
+            repo_url="${git_protocol}://${domain}/${owner}/${repo}.git"
+            ;;
+        "custom")
+            repo_url="${git_protocol}://${domain}/${owner}/${repo}.git"
+            ;;
+        *)
+            error_msg "Unsupported Git service type: ${git_service}"
+            ;;
+    esac
+    
+    echo -e "${INFO} Starting to clone repository: ${repo_url}"
+    
+    # Check if it is a commit hash (40-character hexadecimal string)
+    if [[ ${#branch_or_commit} -eq 40 && "${branch_or_commit}" =~ ^[a-fA-F0-9]+$ ]]; then
+        # If it is a commit hash, clone the entire repository and check out the specific commit
+        echo -e "${INFO} Detected commit hash, cloning full repository and checking out: ${branch_or_commit}"
+        git clone -q --single-branch "${repo_url}" "${target_dir}"
+        [[ "${?}" -ne 0 ]] && git_error_handler "clone" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+        
+        cd "${target_dir}"
+        git checkout "${branch_or_commit}"
+        [[ "${?}" -ne 0 ]] && git_error_handler "checkout" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+    else
+        # If it is a branch or tag, use shallow clone
+        echo -e "${INFO} Cloning branch or tag: ${branch_or_commit}"
+        git clone -q --single-branch --depth=1 --branch="${branch_or_commit}" "${repo_url}" "${target_dir}"
+        [[ "${?}" -ne 0 ]] && git_error_handler "clone" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+    fi
+    
+    echo -e "${SUCCESS} Repository cloned successfully"
+}
+
+# Generic Git repository update function
+git_update_repository() {
+    local git_service="${1}"
+    local domain="${2}"
+    local owner="${3}"
+    local repo="${4}"
+    local branch_or_commit="${5}"
+    local target_dir="${6}"
+    
+    cd "${target_dir}"
+    
+    # Check if it is a commit hash
+    if [[ ${#branch_or_commit} -eq 40 && "${branch_or_commit}" =~ ^[a-fA-F0-9]+$ ]]; then
+        # If it is a commit hash, first fetch the latest code and then check out the specific commit
+        echo -e "${INFO} Updating to specified commit: ${branch_or_commit}"
+        git fetch origin
+        [[ "${?}" -ne 0 ]] && git_error_handler "fetch" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+        
+        git checkout "${branch_or_commit}"
+        [[ "${?}" -ne 0 ]] && git_error_handler "checkout" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+    else
+        # If it is a branch, reset and pull the latest code
+        echo -e "${INFO} Updating branch: ${branch_or_commit}"
+        git checkout "${branch_or_commit}"
+        [[ "${?}" -ne 0 ]] && git_error_handler "checkout" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+        
+        git reset --hard "origin/${branch_or_commit}"
+        [[ "${?}" -ne 0 ]] && git_error_handler "reset" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+        
+        git pull
+        [[ "${?}" -ne 0 ]] && git_error_handler "pull" "${git_service}" "${domain}" "${owner}" "${repo}" "${branch_or_commit}"
+    fi
+    
+    echo -e "${SUCCESS} Repository updated successfully"
+}
+
+# Git operation error handler function
+git_error_handler() {
+    local operation="${1}"
+    local git_service="${2}"
+    local domain="${3}"
+    local owner="${4}"
+    local repo="${5}"
+    local branch_or_commit="${6}"
+    
+    local repo_url="${git_protocol}://${domain}/${owner}/${repo}"
+    
+    case "${operation}" in
+        "clone")
+            error_msg "Failed to clone repository: ${repo_url}。Possible reasons:\n1. Repository URL is incorrect or does not exist\n2. Network connection issues\n3. Insufficient authentication permissions\n4. Branch/tag/commit hash does not exist"
+            ;;
+        "fetch")
+            error_msg "Failed to fetch remote updates: ${repo_url}。Possible reasons:\n1. Network connection issues\n2. Remote repository is inaccessible\n3. Insufficient authentication permissions"
+            ;;
+        "checkout")
+            if [[ ${#branch_or_commit} -eq 40 && "${branch_or_commit}" =~ ^[a-fA-F0-9]+$ ]]; then
+                error_msg "Failed to checkout commit: ${branch_or_commit}。Possible reasons:\n1. Commit hash does not exist in the repository\n2. Repository history is incomplete (due to shallow clone)"
+            else
+                error_msg "Failed to switch branch: ${branch_or_commit}。Possible reasons:\n1. Branch does not exist in remote repository\n2. Local repository state is incorrect"
+            fi
+            ;;
+        "reset")
+            error_msg "Failed to reset branch: ${branch_or_commit}。Possible reasons:\n1. Remote branch does not exist\n2. Local repository state is incorrect"
+            ;;
+        "pull")
+            error_msg "Failed to pull latest code。Possible reasons:\n1. Network connection issues\n2. Remote repository is inaccessible\n3. Insufficient authentication permissions\n4. Local uncommitted changes causing conflicts"
+            ;;
+        "ls-remote")
+            error_msg "Unable to access remote repository: ${repo_url}。Possible reasons:\n1. Repository URL is incorrect or does not exist\n2. Network connection issues\n3. Insufficient authentication permissions\n4. Git service is temporarily unavailable"
+            ;;
+        "ref-not-found")
+            if [[ ${#branch_or_commit} -eq 40 && "${branch_or_commit}" =~ ^[a-fA-F0-9]+$ ]]; then
+                error_msg "Specified commit hash not found in repository: ${branch_or_commit}。Possible reasons:\n1. Commit hash is incorrect\n2. Commit exists in other branches\n3. Repository history is incomplete"
+            else
+                error_msg "Specified branch or tag not found in repository: ${branch_or_commit}。Possible reasons:\n1. Branch/tag name is incorrect\n2. Branch/tag has been deleted or renamed\n3. Insufficient permissions to access the branch/tag"
+            fi
+            ;;
+        *)
+            error_msg "Git operation failed: ${operation}。Please check repository URL, network connection, and permission settings."
+            ;;
+    esac
 }
 
 log_to_file() {
@@ -277,14 +548,36 @@ init_var() {
         esac
     done
 
-    # Receive the value entered by the [ -r ] parameter
-    input_r_value="${repo_owner//https\:\/\/github\.com\//}"
-    code_owner="$(echo "${input_r_value}" | awk -F '@' '{print $1}' | awk -F '/' '{print $1}')"
-    code_repo="$(echo "${input_r_value}" | awk -F '@' '{print $1}' | awk -F '/' '{print $2}')"
-    code_branch="$(echo "${input_r_value}" | awk -F '@' '{print $2}')"
-    #
-    [[ -n "${code_owner}" ]] || error_msg "The [ -r ] parameter is invalid."
-    [[ -n "${code_branch}" ]] || code_branch="${repo_branch}"
+    # Use the new Git URL parsing function to handle the -r parameter
+    if [[ -n "${repo_owner}" && "${repo_owner}" != "unifreq" ]]; then
+        # Parse Git repository URL
+        git_url_parts=($(parse_git_url "${repo_owner}"))
+        git_service_type="${git_url_parts[0]}"
+        git_domain="${git_url_parts[1]}"
+        code_owner="${git_url_parts[2]}"
+        code_repo="${git_url_parts[3]}"
+        code_branch="${git_url_parts[4]}"
+        
+        # Verify Git repository accessibility
+        validate_git_repository "${git_service_type}" "${git_domain}" "${code_owner}" "${code_repo}" "${code_branch}"
+    else
+        # Use default values
+        git_service_type="github"
+        git_domain="github.com"
+        code_owner="${repo_owner}"
+        code_repo=""
+        code_branch="${repo_branch}"
+    fi
+    
+    # If no repository name is specified, use the default kernel repository naming pattern
+    if [[ -z "${code_repo}" ]]; then
+        # Determine repository name based on kernel version
+        for KERNEL_VAR in "${build_kernel[@]}"; do
+            MAIN_LINE="$(echo ${KERNEL_VAR} | awk -F '.' '{print $1"."$2}')"
+            code_repo="linux-${MAIN_LINE}.y"
+            break
+        done
+    fi
 
     # Set the gcc version code
     [[ "${toolchain_name}" =~ ^gcc-[0-9]+.[0-9]+ ]] && {
@@ -409,16 +702,39 @@ query_version() {
         MAIN_LINE="$(echo ${KERNEL_VAR} | awk -F '.' '{print $1"."$2}')"
 
         if [[ -z "${code_repo}" ]]; then linux_repo="linux-${MAIN_LINE}.y"; else linux_repo="${code_repo}"; fi
-        github_kernel_repo="${code_owner}/${linux_repo}/${code_branch}"
-        github_kernel_ver="https://raw.githubusercontent.com/${github_kernel_repo}/Makefile"
-        # latest_version="125"
-        latest_version="$(curl -s ${github_kernel_ver} | grep -oE "SUBLEVEL =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
+        
+        # Build Makefile URL suitable for different Git services
+        kernel_makefile_url=""
+        case "${git_service_type}" in
+            "github")
+                kernel_makefile_url="https://raw.githubusercontent.com/${code_owner}/${linux_repo}/${code_branch}/Makefile"
+                ;;
+            "gitlab")
+                kernel_makefile_url="https://${git_domain}/${code_owner}/${linux_repo}/-/raw/${code_branch}/Makefile"
+                ;;
+            "bitbucket")
+                kernel_makefile_url="https://bitbucket.org/${code_owner}/${linux_repo}/raw/${code_branch}/Makefile"
+                ;;
+            "gitee")
+                kernel_makefile_url="https://gitee.com/${code_owner}/${linux_repo}/raw/${code_branch}/Makefile"
+                ;;
+            "custom")
+                # For custom services, try common URL patterns
+                kernel_makefile_url="https://${git_domain}/${code_owner}/${linux_repo}/raw/${code_branch}/Makefile"
+                ;;
+            *)
+                error_msg "Unsupported Git service type: ${git_service_type}"
+                ;;
+        esac
+        
+        # Get the latest version number
+        latest_version="$(curl -s "${kernel_makefile_url}" | grep -oE "SUBLEVEL =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
         if [[ "${?}" -eq "0" && -n "${latest_version}" ]]; then
             tmp_arr_kernels[${i}]="${MAIN_LINE}.${latest_version}"
         else
-            error_msg "Failed to query the kernel version in [ github.com/${github_kernel_repo} ]"
+            error_msg "Failed to query the kernel version in [ ${git_service_type}/${code_owner}/${linux_repo} ]"
         fi
-        echo -e "${INFO} (${i}) [ ${tmp_arr_kernels[$i]} ] is github.com/${github_kernel_repo} latest kernel. \n"
+        echo -e "${INFO} (${i}) [ ${tmp_arr_kernels[$i]} ] is ${git_service_type}/${code_owner}/${linux_repo} latest kernel. \n"
 
         let i++
     done
@@ -470,34 +786,54 @@ get_kernel_source() {
 
     [[ -d "${kernel_path}" ]] || mkdir -p ${kernel_path}
 
-    # Download the kernel source code from github.com
+    # Build repository URL suitable for different Git services
+    kernel_repo_url=""
+    case "${git_service_type}" in
+        "github")
+            kernel_repo_url="https://${git_domain}/${code_owner}/${code_repo}.git"
+            ;;
+        "gitlab")
+            kernel_repo_url="https://${git_domain}/${code_owner}/${code_repo}.git"
+            ;;
+        "bitbucket")
+            kernel_repo_url="https://${git_domain}/${code_owner}/${code_repo}.git"
+            ;;
+        "gitee")
+            kernel_repo_url="https://${git_domain}/${code_owner}/${code_repo}.git"
+            ;;
+        "custom")
+            kernel_repo_url="https://${git_domain}/${code_owner}/${code_repo}.git"
+            ;;
+        *)
+            error_msg "Unsupported Git service type: ${git_service_type}"
+            ;;
+    esac
+    
+    # Download kernel source code
     if [[ ! -d "${kernel_path}/${local_kernel_path}" ]]; then
-        echo -e "${INFO} Start cloning from [ https://github.com/${server_kernel_repo} -b ${code_branch} ]"
-
-        # Clone the latest kernel source code. If it fails, wait 1 minute and try again, try 10 times.
+        # Clone the latest kernel source code. If it fails, wait 1 minute and retry, up to 10 attempts.
         for i in {1..10}; do
-            git clone -q --single-branch --depth=1 --branch=${code_branch} https://github.com/${server_kernel_repo} ${kernel_path}/${local_kernel_path}
+            git_clone_repository "${git_service_type}" "${git_domain}" "${code_owner}" "${code_repo}" "${code_branch}" "${kernel_path}/${local_kernel_path}"
             [[ "${?}" -eq "0" ]] && break || sleep 60
         done
-        [[ "${?}" -eq "0" ]] || error_msg "[ https://github.com/${server_kernel_repo} ] Clone failed."
+        [[ "${?}" -eq "0" ]] || error_msg "[ ${kernel_repo_url} ] Clone failed."
     else
-        # Get a local kernel version
+        # Get local kernel version
         local_makefile="${kernel_path}/${local_kernel_path}/Makefile"
         local_makefile_version="$(cat ${local_makefile} | grep -oE "VERSION =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
         local_makefile_patchlevel="$(cat ${local_makefile} | grep -oE "PATCHLEVEL =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
         local_makefile_sublevel="$(cat ${local_makefile} | grep -oE "SUBLEVEL =.*" | head -n 1 | grep -oE '[0-9]{1,3}')"
 
-        # Local version and server version comparison
+        # Compare local version with server version
         if [[ "${auto_kernel}" =~ ^(true|yes)$ ]] && [[ "${kernel_sub}" -gt "${local_makefile_sublevel}" ]]; then
-            # Pull the latest source code of the server
-            cd ${kernel_path}/${local_kernel_path}
-            git checkout ${code_branch} && git reset --hard origin/${code_branch} && git pull
+            # Pull the latest source code from the server
+            git_update_repository "${git_service_type}" "${git_domain}" "${code_owner}" "${code_repo}" "${code_branch}" "${kernel_path}/${local_kernel_path}"
             kernel_version="${local_makefile_version}.${local_makefile_patchlevel}.${kernel_sub}"
-            echo -e "${INFO} Synchronize the upstream source code, compile the kernel version [ ${kernel_version} ]."
+            echo -e "${INFO} Sync upstream source code, compile kernel version [ ${kernel_version} ]."
         else
             # Reset to local kernel version number
             kernel_version="${local_makefile_version}.${local_makefile_patchlevel}.${local_makefile_sublevel}"
-            echo -e "${INFO} Use local source code, compile the kernel version [ ${kernel_version} ]."
+            echo -e "${INFO} Use local source code, compile kernel version [ ${kernel_version} ]."
         fi
     fi
 
@@ -891,10 +1227,12 @@ loop_recompile() {
 
         # The loop variable assignment
         if [[ -z "${code_repo}" ]]; then
-            server_kernel_repo="${code_owner}/linux-${kernel_verpatch}.y"
+            kernel_repo_path="${code_owner}/linux-${kernel_verpatch}.y"
+            kernel_full_path="${git_service_type}/${git_domain}/${kernel_repo_path}"
             local_kernel_path="linux-${kernel_verpatch}.y"
         else
-            server_kernel_repo="${code_owner}/${code_repo}"
+            kernel_repo_path="${code_owner}/${code_repo}"
+            kernel_full_path="${git_service_type}/${git_domain}/${kernel_repo_path}"
             local_kernel_path="${code_repo}-${code_branch}"
         fi
 
@@ -926,7 +1264,7 @@ echo -e "${STEPS} Welcome to compile kernel! \n"
 echo -e "${INFO} Server running on ${host_id}: [ Release: ${host_release} / Host: ${arch_info} ] \n"
 # Check script permission, supports running on the x86_64 and aarch64 platforms (ubuntu/debian)
 [[ "$(id -u)" == "0" ]] || error_msg "Please run this script as root: [ sudo ./${0} ]"
-[[ "x86_64 aarch64" == *"${arch_info}"* ]] || error_msg "This script is only supported on the x86_64 and aarch64 platforms."
+[[ "x86_64 aarch64 arm64" == *"${arch_info}"* ]] || error_msg "This script is only supported on the x86_64, aarch64 and arm64 platforms."
 
 # Initialize variables
 init_var "${@}"

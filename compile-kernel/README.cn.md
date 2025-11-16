@@ -39,7 +39,7 @@ sudo apt-get install -y $(cat compile-kernel/tools/script/ubuntu2404-build-armbi
 
 | 参数    | 含义        | 说明                             |
 | ------ | ----------- | ------------------------------- |
-| -r     | Repository  | 指定编译内核的源代码仓库。可选择 `github.com` 的内核源代码仓库。例如 `-r unifreq` 等。可设置参数格式为 `owner/repo@branch` 三项组合，参数中的所有者名称 `owner` 为必选参数，内核源代码仓库名称 `/repo` 和 仓库的分支名称 `@branch` 为可选参数。当仅指定所有者名称 `owner` 参数时，将自动匹配所有者的名称为 `linux-5.x.y` 格式且分支为 `main` 的内核源代码仓库。如果仓库名称或分支名称不同，请使用组合方式指定，如 `owner@branch` 或 `owner/repo` 或 `owner/repo@branch`。默认值：`unifreq` |
+| -r     | Repository  | 指定编译内核的源代码仓库。可选择 `github.com`、`gitlab.com`、`bitbucket.org`、`gitee.com` 或自定义 Git 服务器的内核源代码仓库。例如 `-r unifreq` 等。可设置参数格式为 `owner/repo@branch` 三项组合，参数中的所有者名称 `owner` 为必选参数，内核源代码仓库名称 `/repo` 和 仓库的分支名称 `@branch` 为可选参数。当仅指定所有者名称 `owner` 参数时，将自动匹配所有者的名称为 `linux-5.x.y` 格式且分支为 `main` 的内核源代码仓库。如果仓库名称或分支名称不同，请使用组合方式指定，如 `owner@branch` 或 `owner/repo` 或 `owner/repo@branch`。默认值：`unifreq` |
 | -k     | Kernel      | 指定 kernel 名称，如 `-k 5.15.100`。多个内核使用 `_` 进行连接，如 `-k 5.15.100_5.15.50`。使用 `-k all` 代表编译全部主线内核，当前等价于 `-k 5.4.y_5.10.y_5.15.y_6.1.y_6.6.y_6.12.y`，内核列表会随着上游内核源码仓库 [unifreq](https://github.com/unifreq) 的维护情况动态调整。 |
 | -a     | AutoKernel  | 设置是否自动采用同系列最新版本内核。当为 `true` 时，将自动查找在 `-k` 中指定的内核如 `5.15.100` 的同系列是否有更新的版本，如有 `5.15.100` 之后的最新版本时，将自动更换为最新版。设置为 `false` 时将编译指定版本内核。默认值：`true` |
 | -m     | MakePackage | 设置制作内核的包列表。当设置为 `all` ，将制作 `Image, modules, dtbs` 的全部文件。当设置值为 `dtbs` 时仅制作 3 个 dtbs 文件。默认值：`all` |
@@ -91,12 +91,12 @@ uses: YOUR-REPO/amlogic-s9xxx-armbian@main
 | 参数               | 默认值            | 说明                                                      |
 |-------------------|------------------|-----------------------------------------------------------|
 | build_target      | kernel           | 固定参数 `kernel`，设置编译目标为内核。                        |
-| kernel_source     | unifreq          | 指定编译内核的源代码仓库。默认值为 `unifreq` 。功能参考 `-r`      |
+| kernel_source     | unifreq          | 指定编译内核的源代码仓库。可选择 `github.com`、`gitlab.com`、`bitbucket.org`、`gitee.com` 或自定义 Git 服务器的内核源代码仓库。默认值为 `unifreq` 。功能参考 `-r`      |
 | kernel_version    | 6.1.y_5.15.y     | 指定 kernel 名称，如 `5.15.100`。功能参考 `-k`                |
 | kernel_auto       | true             | 设置是否自动采用同系列最新版本内核。默认值为 `true`。功能参考 `-a`  |
 | kernel_package    | all              | 设置制作内核的包列表。默认值为 `all`。功能参考 `-m`             |
 | kernel_sign       | -ophub           | 设置内核自定义签名。默认值为 `-ophub`。功能参考 `-n`             |
-| kernel_toolchain  | gcc              | 设置编译内核的工具链。默认值为 `gcc`。功能参考 `-t`             |
+| kernel_toolchain  | clang            | 设置编译内核的工具链。默认值为 `clang`。功能参考 `-t`             |
 | kernel_config     | false            | 默认使用 [tools/config](tools/config) 目录下的配置模板。你可以设置编译内核的配置文件在你仓库中的存放目录，如 `kernel/config_path` 。该目录下存储的配置模板必须以内核的主版本命名，如`config-5.10`、`config-5.15`等。 |
 | kernel_patch      | false            | 设置自定义内核补丁目录。 |
 | auto_patch        | false            | 设置是否使用自定义内核补丁。默认值为 `false`。功能参考 `-p` |
